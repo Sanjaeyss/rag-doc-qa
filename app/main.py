@@ -29,7 +29,11 @@ def health():
 async def upload_documents(files: list[UploadFile]):
     ingested = []
     for file in files:
-        dest = Path(settings.upload_dir) / file.filename
+        filename = Path(file.filename or "").name
+        if not filename:
+            raise HTTPException(status_code=400, detail="Uploaded file has no filename")
+
+        dest = Path(settings.upload_dir) / filename
         dest.write_bytes(await file.read())
 
         try:
@@ -37,7 +41,7 @@ async def upload_documents(files: list[UploadFile]):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
-        ingested.append(DocumentInfo(filename=file.filename, chunks=num_chunks))
+        ingested.append(DocumentInfo(filename=filename, chunks=num_chunks))
 
     return UploadResponse(ingested=ingested)
 
