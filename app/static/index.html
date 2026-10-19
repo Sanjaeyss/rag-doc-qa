@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RAG Document Q&A</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e37;
+    --text: #e6e8ec;
+    --muted: #9aa0ab;
+    --accent: #6ea8fe;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+
+  main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  #sidebar {
+    width: 260px;
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+  }
+  #sidebar h2 { font-size: 13px; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+  #docList { list-style: none; padding: 0; margin: 0 0 14px; font-size: 13px; }
+  #docList li { padding: 6px 0; border-bottom: 1px solid var(--border); color: var(--muted); }
+  #docList li span { color: var(--text); }
+
+  #uploadForm { display: flex; flex-direction: column; gap: 8px; }
+  #uploadForm input[type="file"] { font-size: 12px; color: var(--muted); }
+  #uploadForm button, #chatForm button {
+    background: var(--accent);
+    color: #0f1115;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #uploadStatus { font-size: 12px; color: var(--muted); min-height: 16px; }
+
+  #chat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  #messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { max-width: 720px; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #0f1115; padding: 10px 14px; border-radius: 10px; }
+  .msg.assistant { align-self: flex-start; }
+  .msg .bubble { background: var(--panel); border: 1px solid var(--border); padding: 12px 14px; border-radius: 10px; white-space: pre-wrap; line-height: 1.5; }
+  .citations { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .citations .cite { border-left: 2px solid var(--accent); padding: 4px 8px; margin-top: 4px; }
+  .citations .cite b { color: var(--text); }
+
+  #chatForm { display: flex; gap: 8px; padding: 16px 20px; border-top: 1px solid var(--border); }
+  #chatForm input { flex: 1; background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 10px 12px; border-radius: 8px; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>RAG Document Q&A</h1>
+  <p>LangChain + ChromaDB retrieval, grounded answers from Claude with source citations.</p>
+</header>
+
+<main>
+  <aside id="sidebar">
+    <h2>Documents</h2>
+    <ul id="docList"></ul>
+
+    <h2>Upload</h2>
+    <form id="uploadForm">
+      <input type="file" id="fileInput" multiple accept=".pdf,.txt,.md" />
+      <button type="submit">Ingest</button>
+      <div id="uploadStatus"></div>
+    </form>
+  </aside>
+
+  <section id="chat">
+    <div id="messages"></div>
+    <form id="chatForm">
+      <input id="questionInput" type="text" placeholder="Ask a question about your documents..." autocomplete="off" />
+      <button type="submit">Ask</button>
+    </form>
+  </section>
+</main>
+
+<script>
+const docList = document.getElementById("docList");
+const uploadForm = document.getElementById("uploadForm");
+const uploadStatus = document.getElementById("uploadStatus");
+const fileInput = document.getElementById("fileInput");
+const messages = document.getElementById("messages");
+const chatForm = document.getElementById("chatForm");
+const questionInput = document.getElementById("questionInput");
+
+function addDocRow(filename, chunks) {
+  const li = document.createElement("li");
+  li.innerHTML = `<span>${filename}</span> — ${chunks} chunks`;
+  docList.appendChild(li);
+}
+
+uploadForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!fileInput.files.length) return;
+
+  const formData = new FormData();
+  for (const file of fileInput.files) formData.append("files", file);
+
+  uploadStatus.textContent = "Ingesting...";
+  try {
+    const res = await fetch("/documents", { method: "POST", body: formData });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    data.ingested.forEach((d) => addDocRow(d.filename, d.chunks));
+    uploadStatus.textContent = "Done.";
+  } catch (err) {
+    uploadStatus.textContent = "Upload failed: " + err.message;
+  }
+  fileInput.value = "";
+});
+
+function addMessage(role, text) {
+  const wrap = document.createElement("div");
+  wrap.className = `msg ${role}`;
+  if (role === "user") {
+    wrap.textContent = text;
+  } else {
+    wrap.innerHTML = `<div class="bubble"></div><div class="citations"></div>`;
+  }
+  messages.appendChild(wrap);
+  messages.scrollTop = messages.scrollHeight;
+  return wrap;
+}
+
+chatForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const question = questionInput.value.trim();
+  if (!question) return;
+  questionInput.value = "";
+
+  addMessage("user", question);
+  const assistantEl = addMessage("assistant", "");
+  const bubble = assistantEl.querySelector(".bubble");
+  const citesEl = assistantEl.querySelector(".citations");
+
+  const res = await fetch("/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop();
+
+    for (const part of parts) {
+      if (!part.startsWith("data: ")) continue;
+      const evt = JSON.parse(part.slice(6));
+
+      if (evt.type === "token") {
+        bubble.textContent += evt.data;
+      } else if (evt.type === "error") {
+        bubble.textContent += `\n[Error: ${evt.data}]`;
+      } else if (evt.type === "done") {
+        const citations = evt.data.citations || [];
+        if (citations.length) {
+          citesEl.innerHTML = citations
+            .map((c) => `<div class="cite"><b>${c.source}</b>: "${c.cited_text}"</div>`)
+            .join("");
+        }
+      }
+      messages.scrollTop = messages.scrollHeight;
+    }
+  }
+});
+</script>
+
+</body>
+</html>
